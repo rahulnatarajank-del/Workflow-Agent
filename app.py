@@ -7,10 +7,19 @@ import json
 # Load environment variables
 load_dotenv()
 
-# CRITICAL: Get token from Streamlit secrets first (for cloud), fallback to env
-if "HF_TOKEN" in st.secrets:
-    hf_token = st.secrets["HF_TOKEN"]
-else:
+# Get token from Streamlit secrets (cloud) or .env file (local)
+try:
+    # Try Streamlit Cloud secrets first
+    if "HF_TOKEN" in st.secrets:
+        hf_token = st.secrets["HF_TOKEN"]
+    else:
+        hf_token = None
+except:
+    # If secrets don't exist (local development), use .env
+    hf_token = None
+
+# Fallback to environment variable for local development
+if not hf_token:
     hf_token = os.getenv("HF_TOKEN")
 
 # Check if token exists BEFORE initializing client
