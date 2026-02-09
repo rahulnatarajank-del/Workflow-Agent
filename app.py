@@ -1,5 +1,5 @@
 import streamlit as st
-from openai import OpenAI
+from huggingface_hub import InferenceClient
 from dotenv import load_dotenv
 import os
 import json
@@ -10,10 +10,7 @@ load_dotenv()
 hf_token = st.secrets["HF_TOKEN"]
 
 # NOW initialize the client (only if token exists)
-client = OpenAI(
-    base_url="https://router.huggingface.co/v1",
-    api_key=hf_token,
-)
+client = InferenceClient(token=hf_token)
 
 # Page config
 st.set_page_config(
