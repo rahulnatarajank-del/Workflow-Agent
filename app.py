@@ -8,6 +8,21 @@ import json
 load_dotenv()
 hf_token = os.getenv("HF_TOKEN")
 
+# Check if token exists
+if not hf_token:
+    st.error("⚠️ HF_TOKEN not found! Please add it in Streamlit Cloud Settings.")
+    st.info("""
+    **To add your Hugging Face token:**
+    1. Click 'Manage app' (bottom right)
+    2. Go to 'Settings' → 'Secrets'
+    3. Add this:
+```
+    HF_TOKEN = "your_hf_token_here"
+```
+    4. Click 'Save' and the app will restart
+    """)
+    st.stop()
+
 # Initialize OpenAI client with HF endpoint
 client = OpenAI(
     base_url="https://router.huggingface.co/v1",
