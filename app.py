@@ -1,16 +1,17 @@
 import streamlit as st
-from huggingface_hub import InferenceClient
+from groq import Groq
 from dotenv import load_dotenv
 import os
+import re
 import json
 
 # Load environment variables
 load_dotenv()
 
-hf_token = st.secrets["HF_TOKEN"]
+groq_api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
 
 # NOW initialize the client (only if token exists)
-client = InferenceClient(token=hf_token)
+client = Groq(api_key=groq_api_key)
 
 # Page config
 st.set_page_config(
@@ -74,9 +75,7 @@ if prompt := st.chat_input("Describe the workflow you need..."):
         with st.spinner("Thinking..."):
             try:
                 # ENHANCED SYSTEM PROMPT WITH ATHENA/CERNER CONNECTION SUPPORT
-                system_prompt = {
-                    "role": "system",
-                    "content": """You are an expert assistant for Health Data Connector (HDC) workflows. You follow a structured question flow based on the selected workflow type.
+                system_prompt = """You are an expert assistant for Health Data Connector (HDC) workflows. You follow a structured question flow based on the selected workflow type.
 
 WORKFLOW TYPE DETECTION:
 The user will select one of these workflow types:
@@ -304,10 +303,23 @@ CONFIGURATION STRUCTURES:
 
 **2. API CONFIGURATION JSON:**
 
+**CRITICAL CONTENT TYPE RULES:**
+- If user does NOT specify contentType, ALWAYS default to "application/json"
+- If user does NOT specify acceptContentType, ALWAYS default to "application/json"
+- Only use other content types (application/x-www-form-urlencoded, application/xml) if user explicitly specifies them
+- For GET and DELETE requests: contentType is still "application/json" (no request body)
+
 CRITICAL PATH PARAMETER RULES:
-- apiPath should ONLY contain the base path (e.g., "patients" NOT "/patients/{patientid}/referralauths")
-- ALL path segments (both dynamic and literal) go in pathParameters array IN ORDER
-- pathParameters builds the full URL path by concatenating all segments
+- apiPath contains ONLY the FIRST segment of the path (remove leading /)
+- ALL REMAINING segments (both dynamic and literal) go in pathParameters array IN ORDER
+- pathParameters builds the rest of the URL path after apiPath
+- If the path is just a single segment (e.g., /patients), apiPath gets that segment and pathParameters is EMPTY []
+
+Examples of apiPath extraction:
+- "/patients" → apiPath: "patients", pathParameters: []
+- "/patients/{patientid}/chat" → apiPath: "patients", pathParameters: [{patientid}, {chat}]
+- "/v1/departments" → apiPath: "v1", pathParameters: [{departments}]
+- "/appointments" → apiPath: "appointments", pathParameters: []
 
 {
   "apiId": "{ProjectName}-API",
@@ -341,10 +353,14 @@ CRITICAL PATH PARAMETER RULES:
 
 **CRITICAL PATH PARAMETER EXAMPLES:**
 
-❌ WRONG:
+❌ WRONG (Do NOT include / in apiPath, and do NOT duplicate first segment):
 {
-  "apiPath": "/patients/{patientid}/referralauths",
+  "apiPath": "/patients",  // Wrong: has leading /
   "pathParameters": [
+    {
+      "value": "patients",  // Wrong: duplicating apiPath
+      "valueType": "Literal"
+    },
     {
       "value": "patientid",
       "valueType": "Value"
@@ -402,6 +418,21 @@ Another example - GET /appointments:
 {
   "apiPath": "appointments",
   "pathParameters": []
+}
+
+Another example - GET /patients/{patientid}/chat:
+{
+  "apiPath": "patients",
+  "pathParameters": [
+    {
+      "value": "patientid",
+      "valueType": "Value"
+    },
+    {
+      "value": "chat",
+      "valueType": "Literal"
+    }
+  ]
 }
 
 **3. TEMPLATE JSON (for Request Body):**
@@ -501,6 +532,30 @@ Example:
 - Filter: $.array[?(@.key=='value')] to find items matching condition
 - Nested: $.level1.level2.level3
 
+**CRITICAL OUTPUT VALUE RULES - MUST NEVER CHANGE:**
+
+For HttpCallStep:
+- output value MUST ALWAYS be "ResponseData" (never "RawResponse", "ApiResponse", or any other name)
+- Correct: "rawApiResponse": "ResponseData"
+- Wrong: "rawApiResponse": "RawResponse"
+
+For DeserializeObjectStep:
+- output value MUST ALWAYS be "OutputObject" (never "PractitionerData", "DeserializedData", or any other name)
+- Correct: "deserializedData": "OutputObject"
+- Wrong: "deserializedData": "PractitionerData"
+
+For DataTransformStep:
+- output value MUST ALWAYS be "TransformedData"
+- Correct: "transformedData": "TransformedData"
+- Wrong: "transformedData": "TransformedObject"
+
+For HL7TransformStep:
+- output value MUST ALWAYS be "TransformedData"
+- Correct: "transformedData": "TransformedData"
+- Wrong: "transformedData": "HL7Output"
+
+These are FIXED system values that cannot be changed regardless of the workflow context.
+
 STEP-SPECIFIC INPUT/OUTPUT PATTERNS:
 
 **HL7TransformStep:**
@@ -536,8 +591,13 @@ STEP-SPECIFIC INPUT/OUTPUT PATTERNS:
   },
   "output": {
     "rawApiResponse": "ResponseData"
-  }
+  },
+  "redirect": {"baseUrl": "", "queryParameters": {}},
+  "runRules": [],
+  "validationRules": []
 }
+
+CRITICAL: The output key "rawApiResponse" must be passed to the next step's input using the KEY name, not the value.
 
 **HttpCallStep (WITH response transformation):**
 {
@@ -549,8 +609,13 @@ STEP-SPECIFIC INPUT/OUTPUT PATTERNS:
   "output": {
     "transformedData": "TransformedData",
     "rawApiResponse": "ResponseData"
-  }
+  },
+  "redirect": {"baseUrl": "", "queryParameters": {}},
+  "runRules": [],
+  "validationRules": []
 }
+
+CRITICAL: The output keys "transformedData" and "rawApiResponse" must be passed to the next step's input using the KEY names, not the values.
 
 **DeserializeObjectStep:**
 {
@@ -560,8 +625,15 @@ STEP-SPECIFIC INPUT/OUTPUT PATTERNS:
   },
   "output": {
     "deserializedData": "OutputObject"
-  }
+  },
+  "redirect": {"baseUrl": "", "queryParameters": {}},
+  "runRules": [],
+  "validationRules": []
 }
+
+CRITICAL: 
+- The input "data" field should reference the OUTPUT KEY from the previous step (e.g., "rawApiResponse"), NOT the output value.
+- The output key "deserializedData" must be passed to the next step's input using the KEY name, not the value "OutputObject".
 
 **SetReturnDataStep:**
 {
@@ -569,8 +641,13 @@ STEP-SPECIFIC INPUT/OUTPUT PATTERNS:
   "input": {
     "{Descriptive Label}": "{outputKeyFromPreviousStep}"
   },
-  "output": {}
+  "output": {},
+  "redirect": {"baseUrl": "", "queryParameters": {}},
+  "runRules": [],
+  "validationRules": []
 }
+
+CRITICAL: The input value should reference the OUTPUT KEY from the previous step (e.g., "deserializedData" or "transformedData"), NOT the output value.
 
 HL7 PATH EXTRACTION RULES:
 - All paths start with: $.GenericMessageWrapper
@@ -598,10 +675,13 @@ USER INTERACTION GUIDELINES:
    - For other platforms: Inform user to create manually and confirm when ready
 
 3. **Question Flow:**
-   - Ask questions ONE AT A TIME
+   - NEVER skip questions and jump directly to generating templates
+   - ALWAYS ask questions ONE AT A TIME in the exact order specified
+   - WAIT for the user's answer before proceeding to the next question
    - Follow the exact question order for the selected workflow type
-   - Wait for user's answer before asking next question
+   - DO NOT generate any configurations until ALL required questions have been answered
    - Be conversational and friendly
+   - After the LAST question is answered, THEN generate the complete configurations
 
 4. **Information Gathering:**
    - For API paths: Extract path parameters correctly into pathParameters array
@@ -663,7 +743,24 @@ For non-API workflows (Types 3 & 4):
 ```
 ---
 
+**CRITICAL VARIABLE CHAINING RULES:**
+1. Each step's output defines KEY-VALUE pairs
+2. The next step's input references the previous step's output KEY (not the value)
+3. Example chain:
+   - Step 1 output: {"rawApiResponse": "ResponseData"} 
+   - Step 2 input: {"data": "rawApiResponse"} ← Uses the KEY
+   - Step 2 output: {"deserializedData": "OutputObject"}
+   - Step 3 input: {"Result": "deserializedData"} ← Uses the KEY
+4. NEVER use the output VALUE (like "ResponseData" or "OutputObject") in the next step's input
+5. ALWAYS use the output KEY (like "rawApiResponse" or "deserializedData") in the next step's input
+
 CRITICAL RULES:
+CRITICAL RULES:
+- NEVER GENERATE TEMPLATES OR CONFIGURATIONS UNTIL ALL QUESTIONS ARE ANSWERED
+- You must ask EVERY required question in order, one at a time
+- Do not provide "fill in the blanks" templates - generate complete, ready-to-use JSONs
+- Only after collecting ALL information should you generate the final configurations
+- For API workflows (Types 1 & 2): ALWAYS handle Connection/Application setup FIRST
 - For API workflows (Types 1 & 2): ALWAYS handle Connection/Application setup FIRST
 - Only auto-generate Application & Connection for Athena and Cerner platforms
 - For other platforms: Instruct user to create manually in HDC
@@ -679,9 +776,8 @@ CRITICAL RULES:
 - Application name and Connection name follow pattern: {Platform}-app-{organization} and {Platform}-con-{organization}
 - Secret ID is used in both clientSecretId and privateKeyName (same value)
 - Connection includes the application reference in applications object"""
-                }
 
-                messages = [system_prompt]
+                messages = [{"role": "system", "content": system_prompt}]
                 
                 # Add workflow type context if selected
                 if st.session_state.workflow_type:
@@ -707,16 +803,22 @@ CRITICAL RULES:
                     }
                     messages.append(context_message)
                 
-                messages.extend(st.session_state.messages)
+                # Convert session messages to Groq format
+                for msg in st.session_state.messages:
+                    messages.append({
+                        "role": msg["role"],
+                        "content": msg["content"]
+                    })
                 
                 completion = client.chat.completions.create(
-                    model="Qwen/Qwen2.5-Coder-32B-Instruct", 
+                    model="openai/gpt-oss-safeguard-20b",
                     messages=messages,
-                    max_tokens=4000, 
-                    temperature=0.2, 
+                    max_tokens=4000,
+                    temperature=0.2,
                 )
-                
                 assistant_response = completion.choices[0].message.content
+
+                assistant_response = re.sub(r'<think>.*?</think>', '', assistant_response, flags=re.DOTALL).strip()
                 
                 # Detect workflow type selection from user's message
                 user_msg_lower = prompt.lower()
@@ -768,7 +870,7 @@ CRITICAL RULES:
                 
             except Exception as e:
                 st.error(f"Error: {str(e)}")
-                st.info("Please check your Hugging Face token configuration")
+                st.info("Please check your Groq API key configuration")
 
 # Sidebar
 with st.sidebar:
