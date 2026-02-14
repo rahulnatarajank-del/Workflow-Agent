@@ -335,7 +335,7 @@ CONFIGURATION STRUCTURES:
 **CRITICAL CONTENT TYPE RULES:**
 - If user does NOT specify contentType, ALWAYS default to "application/json"
 - If user does NOT specify acceptContentType, ALWAYS default to "application/json"
-- Only use other content types (application/x-www-form-urlencoded, application/xml) if user explicitly specifies them
+- Only use other content types (application/x-www-form-urlencoded, application/xml, application/fhir+json) if user explicitly specifies them
 - For GET and DELETE requests: contentType is still "application/json" (no request body)
 
 CRITICAL PATH PARAMETER RULES:
@@ -563,6 +563,15 @@ Example:
   "throwTokenException": false
 }
 
+**For contentType = "application/fhir+json":**
+{
+  "templateId": "{ProjectName}-Tem",
+  "templateBody": "{\"resourceType\": \"%resourceType%\", \"field1\": \"%token1%\", \"field2\": \"%token2%\"}",
+  "escapeTokens": "Json",
+  "defaultTokenValue": "",
+  "throwTokenException": false
+}
+
 **CRITICAL Template Rules by Content Type:**
 
 1. **application/x-www-form-urlencoded:**
@@ -581,6 +590,13 @@ Example:
    - Format: Valid XML string
    - escapeTokens: "Xml"
    - throwTokenException: false
+
+4. **application/fhir+json:**
+   - Format: Valid FHIR JSON string with escaped quotes (same structure as application/json but for FHIR resources)
+   - escapeTokens: "Json"
+   - throwTokenException: false
+   - Entire JSON must be on one line with escaped quotes: {\"resourceType\": \"Patient\", \"field\": \"%token%\"}
+   - Used specifically for FHIR-compliant API requests
 
 **4. DATA TRANSFORM JSON:**
 
