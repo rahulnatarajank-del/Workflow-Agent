@@ -491,6 +491,33 @@ Another example - GET /patients/{patientid}/chat:
   ]
 }
 
+Another example - GET /patient/{patientid}/patientname/{patientname}:
+{
+  "apiPath": "patient",
+  "pathParameters": [
+    {
+      "value": "patientid",
+      "valueType": "Value"
+    },
+    {
+      "value": "patientname",
+      "valueType": "Literal"
+    },
+    {
+      "value": "patientname",
+      "valueType": "Value"
+    }
+  ]
+}
+
+CRITICAL RULE FOR LITERAL + VALUE PAIRS:
+- When a path segment is a fixed word (e.g., "patientname") followed by a dynamic value with the SAME name (e.g., {patientname}), you MUST generate TWO entries:
+  1. {"value": "patientname", "valueType": "Literal"} for the fixed segment
+  2. {"value": "patientname", "valueType": "Value"} for the dynamic value
+- This applies even when the literal segment name and the dynamic param name are identical
+- NEVER merge them into a single entry
+- NEVER skip the Literal entry just because it has the same name as the Value entry
+
 CRITICAL QUERY PARAMETER RULES:
 - The "key" is the query parameter name as it appears in the URL (e.g., "patientage")
 - The "value" must ALWAYS be the same as "key" (never empty)
