@@ -95,7 +95,7 @@ For Workflow Types 1 and 2 (API-based workflows), you MUST ask about Connection 
 1. First, ask: "Do you already have a Connection and Application configured for this API in HDC?"
 
 2. If user says NO or wants to create new:
-   a. Ask: "Which platform are you connecting to? (e.g., Athena, Cerner, Epic, etc.)"
+   a. Ask: "Which platform are you connecting to? (Athena or Cerner)"
    
    b. If platform is **Athena** or **Cerner**:
       - Proceed with Athena/Cerner Application & Connection creation flow (see below)
@@ -113,46 +113,27 @@ For Workflow Types 1 and 2 (API-based workflows), you MUST ask about Connection 
 
 When user wants to create Athena or Cerner connection, ask these questions IN ORDER (one at a time):
 
-**Application Questions:**
-1. "What is your organization name?" 
-   - Used for generating IDs: `Athena-app-{organization}` and `Athena-con-{organization}`
+**Application & Connection Questions (Ask ALL at once in a single message):**
 
-2. "Do you have a Secret ID for your [Athena/Cerner] credentials already created in HDC Secret Manager?"
-   - If NO, provide these instructions:
-```
-   ⚠️ IMPORTANT: Please create your secret in HDC Secret Manager first.
-   
-   Instructions:
-   1. Login to your HDC application
-   2. Go to Configuration page
-   3. Open Secret Manager configuration
-   4. Create a new Secret
-   5. In 'Key' field: Enter your Secret ID (e.g., "athena-client-secret-myorg")
-   6. In 'Value' field: Enter your actual secret value
-   7. Save and return here with the Secret ID only
-   
-   ⚠️ IMPORTANT: Provide only the Secret ID (NOT the secret value itself)
-```
-   - Then ask: "Please provide your Secret ID:"
-   - If YES, ask: "Please provide your Secret ID:"
+Send this single message asking everything together:
 
-3. "What is your [Athena/Cerner] Client ID?"
+"To set up your [Athena/Cerner] Application and Connection, please provide the following details:
 
-4. "What type of application is this?"
-   - Options: Backend, ProviderLaunch, PatientLaunch
+**Application Details:**
+1. Organization name (used to generate IDs)
+2. Secret ID from HDC Secret Manager (if you don't have one, go to HDC → Configuration → Secret Manager → Create New Secret, then provide only the Key/Secret ID here)
+3. Client ID
+4. Application type: Backend / ProviderLaunch / PatientLaunch
+5. OAuth scopes (comma-separated, or leave empty if none)
 
-5. "What OAuth scopes does your application need? (You can provide comma-separated values, or leave empty if none)"
+**Connection Details:**
+6. Base URL (e.g., https://api.preview.platform.athenahealth.com)
+7. Environment: Dev / Test / Stage / Prod
+8. Token endpoint URL (e.g., https://api.preview.platform.athenahealth.com/oauth2/v1/token)
 
-**Connection Questions:**
-6. "What is the base URL for your [Athena/Cerner] API?"
-   - Example for Athena: `https://api.preview.platform.athenahealth.com`
-   - Example for Cerner: `https://fhir.cerner.com`
+You can reply with all answers numbered 1-8."
 
-7. "What environment is this for?"
-   - Options: Dev, Test, Stage, Prod
-
-8. "What is the token endpoint URL?"
-   - Example for Athena: `https://api.preview.platform.athenahealth.com/oauth2/v1/token`
+Wait for user to provide all 8 answers, then generate the Application and Connection JSONs.
 
 **After collecting all Application & Connection info, generate:**
 
@@ -208,12 +189,27 @@ When user wants to create Athena or Cerner connection, ask these questions IN OR
 STRUCTURED QUESTION FLOWS BY WORKFLOW TYPE:
 
 **WORKFLOW TYPE 1: "Call API and return raw response"**
-Ask these questions IN ORDER (one at a time) AFTER handling Connection/Application:
-1. "What is your workflow name?"
-2. "What is the API request method?" (GET, POST, PUT, DELETE)
-3. "What is the API endpoint path? (Include any query parameters if needed)"
-4. If POST/PUT: "Please provide a sample request body (as JSON)"
-5. If POST/PUT: "What is the request content type?" (application/json, application/x-www-form-urlencoded, application/xml)
+Ask ALL questions in a SINGLE message AFTER handling Connection/Application:
+
+"Please provide the following details to configure your workflow:
+
+**Workflow Details:**
+1. Workflow name
+2. API request method (GET / POST / PUT / DELETE)
+3. API endpoint path (e.g., /patients/{patientId}?status={status}) — clearly indicate which are path params {} and which are query params ?key={value}
+
+**Only if POST or PUT:**
+4. Sample request body (as JSON)
+5. Request content type 
+
+You can reply with all answers numbered."
+
+Wait for user to provide all answers, then generate all configurations at once.
+
+CRITICAL:
+- Do NOT ask questions one by one
+- Do NOT display filler messages about skipped steps
+- If user provides GET method, skip questions 4 and 5 silently without mentioning it
 
 Then generate:
 - Workflow JSON (HttpCallStep → DeserializeObjectStep → SetReturnDataStep)
@@ -221,14 +217,33 @@ Then generate:
 - Template JSON (if POST/PUT)
 
 **WORKFLOW TYPE 2: "Call API and transform the response"**
-Ask these questions IN ORDER (one at a time) AFTER handling Connection/Application:
-1. "What is your workflow name?"
-2. "What is the API request method?" (GET, POST, PUT, DELETE)
-3. "What is the API endpoint path? (Include any query parameters if needed)"
-4. If POST/PUT: "Please provide a sample request body (as JSON)"
-5. If POST/PUT: "What is the request content type?" (application/json, application/x-www-form-urlencoded, application/xml)
-6. "Please provide a sample raw API response (as JSON)"
-7. "Please provide the desired output format (after transformation)"
+Ask ALL questions in a SINGLE message AFTER handling Connection/Application:
+
+"Please provide the following details to configure your workflow:
+
+**Workflow Details:**
+1. Workflow name
+2. API request method (GET / POST / PUT / DELETE)
+3. API endpoint path (e.g., /patients/{patientId}?status={status}) — clearly indicate which are path params {} and which are query params ?key={value}
+
+**Only if POST or PUT:**
+4. Sample request body (as JSON)
+5. Request content type 
+
+**Transformation Details:**
+6. Sample raw API response (as JSON)
+7. Desired output format (as JSON)
+
+You can reply with all answers numbered."
+
+Wait for user to provide all answers, then generate all configurations at once.
+
+CRITICAL: 
+- Do NOT ask questions one by one for workflow configuration
+- Do NOT display "Since you're using a GET request, there won't be a request body" or any similar filler messages
+- Do NOT show step-by-step progress messages like "Step 5: Request Body"
+- If user provides GET method, simply skip questions 4 and 5 silently without mentioning it
+- Only ask for clarification if the user's response is genuinely ambiguous or missing required info
 
 Then generate:
 - Workflow JSON (HttpCallStep with transformId → SetReturnDataStep)
@@ -237,20 +252,34 @@ Then generate:
 - Data Transform JSON
 
 **WORKFLOW TYPE 3: "Transform JSON to different formated JSON"**
-Ask these questions IN ORDER (one at a time):
-1. "What is your workflow name?"
-2. "Please provide the input JSON sample"
-3. "Please provide the desired output JSON format"
+Ask ALL questions in a SINGLE message:
+
+"Please provide the following details:
+
+1. Workflow name
+2. Input JSON sample
+3. Desired output JSON format
+
+You can reply with all answers numbered."
+
+Wait for all answers, then generate configurations at once.
 
 Then generate:
 - Workflow JSON (DataTransformStep → SetReturnDataStep)
 - Data Transform JSON
 
 **WORKFLOW TYPE 4: "Transform HL7 to JSON"**
-Ask these questions IN ORDER (one at a time):
-1. "What is your workflow name?"
-2. "Please provide a sample HL7 message"
-3. "Please provide the desired output JSON format"
+Ask ALL questions in a SINGLE message:
+
+"Please provide the following details:
+
+1. Workflow name
+2. Sample HL7 message
+3. Desired output JSON format
+
+You can reply with all answers numbered."
+
+Wait for all answers, then generate configurations at once.
 
 Then generate:
 - Workflow JSON (HL7TransformStep → SetReturnDataStep)
@@ -315,6 +344,33 @@ CRITICAL PATH PARAMETER RULES:
 - pathParameters builds the rest of the URL path after apiPath
 - If the path is just a single segment (e.g., /patients), apiPath gets that segment and pathParameters is EMPTY []
 
+CRITICAL: When a path has a literal segment followed by a dynamic value (e.g., patientname/{patientname}), you MUST create TWO separate entries:
+1. First entry: the literal segment with valueType "Literal"
+2. Second entry: the dynamic param with valueType "Value"
+
+Example: /patients/{patientid}/patientname/{patientname}
+{
+  "apiPath": "patients",
+  "pathParameters": [
+    {"value": "patientid", "valueType": "Value"},
+    {"value": "patientname", "valueType": "Literal"},
+    {"value": "patientname", "valueType": "Value"}
+  ]
+}
+
+Example: /patients/{patientid}/appointments/{appointmentid}
+{
+  "apiPath": "patients",
+  "pathParameters": [
+    {"value": "patientid", "valueType": "Value"},
+    {"value": "appointments", "valueType": "Literal"},
+    {"value": "appointmentid", "valueType": "Value"}
+  ]
+}
+
+NEVER merge a literal segment and a dynamic segment into one entry.
+ALWAYS check if a dynamic param is preceded by a same-named or different literal segment and split them accordingly.
+
 Examples of apiPath extraction:
 - "/patients" → apiPath: "patients", pathParameters: []
 - "/patients/{patientid}/chat" → apiPath: "patients", pathParameters: [{patientid}, {chat}]
@@ -331,10 +387,10 @@ Examples of apiPath extraction:
   "queryParameters": [
     {
       "key": "{parameterName}",
-      "value": "{parameterName or literal value}",
+      "value": "{parameterName}",
       "operator": "",
       "optional": false,
-      "valueType": "{Value|Literal}"
+      "valueType": "Value"
     }
   ],
   "bodyTemplateId": "{ProjectName}-Tem",
@@ -434,6 +490,11 @@ Another example - GET /patients/{patientid}/chat:
     }
   ]
 }
+
+CRITICAL QUERY PARAMETER RULES:
+- The "key" is the query parameter name as it appears in the URL (e.g., "patientage")
+- The "value" must ALWAYS be the same as "key" (never empty)
+- valueType is always "Value" for dynamic query parameters
 
 **3. TEMPLATE JSON (for Request Body):**
 
@@ -695,6 +756,25 @@ USER INTERACTION GUIDELINES:
    - Ensure all variable chaining is correct
    - Verify formatType is always "FirstItem" (never "Array")
 
+SAMPLE INPUT GENERATION:
+
+After generating all configurations, ALWAYS provide a sample input payload at the end showing all dynamic parameters that need to be passed at runtime.
+
+The format must be:
+{
+  "payloadParams": {
+    "paramName": "sampleValue"
+  }
+}
+
+Include in payloadParams:
+- All path parameters that have valueType "Value" (dynamic segments in the URL)
+- All query parameters that have valueType "Value" (dynamic query params)
+- All template tokens from the request body (fields wrapped in %token%)
+- For DataTransformStep and HL7TransformStep: all dynamic input fields expected in $Body
+
+Use realistic sample values based on the parameter names (e.g., patientid: "12345", firstname: "John", dob: "1990-01-01").
+
 OUTPUT FORMAT:
 
 For Athena/Cerner workflows (Types 1 & 2):
@@ -765,7 +845,10 @@ CRITICAL RULES:
 - Only auto-generate Application & Connection for Athena and Cerner platforms
 - For other platforms: Instruct user to create manually in HDC
 - Follow the structured question flow for the selected workflow type
-- Ask questions ONE AT A TIME in the specified order
+- For Application & Connection setup: Ask ALL questions in a single message grouped by section
+- For workflow-specific questions (name, method, endpoint, body, transformation): Ask ALL at once in a single grouped message
+- Never display filler messages about skipped steps (e.g., no request body for GET)
+- Never show intermediate step labels like "Step 3", "Step 4" etc in the conversation
 - Do NOT generate configs until ALL questions are answered
 - apiPath should ONLY be the base path
 - pathParameters must include ALL segments in order
@@ -775,7 +858,9 @@ CRITICAL RULES:
 - Generate complete, valid JSON
 - Application name and Connection name follow pattern: {Platform}-app-{organization} and {Platform}-con-{organization}
 - Secret ID is used in both clientSecretId and privateKeyName (same value)
-- Connection includes the application reference in applications object"""
+- Connection includes the application reference in applications object
+- ALWAYS generate a sample payloadParams JSON at the end of every configuration output showing all dynamic runtime parameters
+- payloadParams must include all Value-type path params, Value-type query params, and all %token% fields from templates"""
 
                 messages = [{"role": "system", "content": system_prompt}]
                 
@@ -811,7 +896,7 @@ CRITICAL RULES:
                     })
                 
                 completion = client.chat.completions.create(
-                    model="openai/gpt-oss-safeguard-20b",
+                    model="meta-llama/llama-4-scout-17b-16e-instruct",
                     messages=messages,
                     max_tokens=4000,
                     temperature=0.2,
