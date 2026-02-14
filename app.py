@@ -557,6 +557,42 @@ Example:
 
 **4. DATA TRANSFORM JSON:**
 
+CRITICAL ARRAY HANDLING RULES:
+- NEVER create separate propertyGroups for each array index (e.g., [0], [1], [2])
+- When the source data contains an array, use a SINGLE propertyGroup with:
+  - "key": the output array field name (e.g., "patients")
+  - "locator": the JSONPath to the source array (e.g., "$.patients")
+  - Inside "properties": use paths RELATIVE to each array item (e.g., "$.name" not "$.patients[0].name")
+- The locator automatically iterates over all array items
+
+Example for ARRAY transformation:
+{
+  "transformId": "{ProjectName}-DT",
+  "propertyGroups": [
+    {
+      "key": "patients",
+      "locator": "$.patients",
+      "propertyGroups": [],
+      "properties": {
+        "fullName": {
+          "path": "$.name",
+          "value": "",
+          "map": "",
+          "mapDefault": "",
+          "valueType": "Path",
+          "formatType": "FirstItem",
+          "dateFormat": {"inputFormat": "", "outputFormat": "", "throwExceptions": false},
+          "stringFormat": {"mappings": {}, "regularExpression": "", "replacement": "", "defaultMapping": "", "throwExceptions": false},
+          "propertyGroups": [],
+          "properties": {},
+          "delimiter": ""
+        }
+      }
+    }
+  ]
+}
+
+Example for FLAT (non-array) transformation:
 {
   "transformId": "{ProjectName}-DT",
   "propertyGroups": [
@@ -855,6 +891,9 @@ CRITICAL RULES:
 - Template format MUST match contentType
 - formatType must always be "FirstItem" (never "Array")
 - HttpCallStep with transformId returns TWO outputs
+- NEVER create separate propertyGroups for each array index in Data Transform
+- ALWAYS use locator to iterate arrays in a single propertyGroup
+- Property paths inside a locator-based propertyGroup must be relative to each array item (e.g., "$.name" not "$.patients[0].name")
 - Generate complete, valid JSON
 - Application name and Connection name follow pattern: {Platform}-app-{organization} and {Platform}-con-{organization}
 - Secret ID is used in both clientSecretId and privateKeyName (same value)
