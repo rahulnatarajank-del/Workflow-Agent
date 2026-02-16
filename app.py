@@ -4,14 +4,105 @@ from dotenv import load_dotenv
 import os
 import re
 import json
+import requests
 
 # Load environment variables
 load_dotenv()
 
 groq_api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+hdc_base_url = st.secrets.get("HDC_BASE_URL") or os.getenv("HDC_BASE_URL")
+hdc_api_key = st.secrets.get("HDC_API_KEY") or os.getenv("HDC_API_KEY")
 
 # NOW initialize the client (only if token exists)
 client = Groq(api_key=groq_api_key)
+
+# HDC API headers
+hdc_headers = {
+    "Content-Type": "application/json",
+    "x-api-key": hdc_api_key
+}
+
+def call_hdc_api(endpoint, payload):
+    """Call HDC API and return success status and response"""
+    try:
+        url = f"{hdc_base_url}{endpoint}"
+        response = requests.post(url, headers=hdc_headers, json=payload)
+        
+        if response.status_code in [200, 201, 204]:
+            # Handle empty response body (still a success)
+            if not response.text or response.text.strip() == "":
+                return True, {"message": "Deployed successfully (no response body)"}
+            try:
+                return True, response.json()
+            except Exception:
+                return True, {"message": response.text}
+        else:
+            try:
+                error_detail = response.json()
+            except Exception:
+                error_detail = response.text if response.text else "(empty response body)"
+            return False, f"Status {response.status_code}: {error_detail}"
+            
+    except requests.exceptions.ConnectionError as e:
+        return False, f"Connection Error - Could not reach {url}. Detail: {str(e)}"
+    except requests.exceptions.Timeout as e:
+        return False, f"Timeout Error: {str(e)}"
+    except Exception as e:
+        return False, f"Unexpected Error: {str(e)}"
+
+def extract_json_blocks(text):
+    """Extract all JSON blocks from assistant response"""
+    pattern = r'```json\s*([\s\S]*?)\s*```'
+    matches = re.findall(pattern, text)
+    results = []
+    for match in matches:
+        try:
+            parsed = json.loads(match)
+            results.append(parsed)
+        except:
+            pass
+    return results
+
+def identify_config_type(config):
+    """Identify what type of config a JSON block is"""
+    if "workflowId" in config:
+        return "workflow"
+    elif "apiId" in config:
+        return "api"
+    elif "transformId" in config:
+        return "transform"
+    elif "applicationId" in config:
+        return "application"
+    elif "connectionId" in config:
+        return "connection"
+    return None
+
+def deploy_configurations(configs):
+    """Deploy all configurations to HDC and return results"""
+    results = {}
+    
+    # Define endpoint mapping
+    endpoint_map = {
+        "application": "/api/v1/applications",
+        "connection": "/api/v1/connections",
+        "api": "/api/v1/apis",
+        "transform": "/api/v1/transforms",
+        "workflow": "/api/v1/workflows"
+    }
+    
+    # Deploy in correct order: application → connection → api/transform → workflow
+    order = ["application", "connection", "api", "transform", "workflow"]
+    
+    for config_type in order:
+        if config_type in configs:
+            endpoint = endpoint_map[config_type]
+            success, response = call_hdc_api(endpoint, configs[config_type])
+            results[config_type] = {
+                "success": success,
+                "response": response
+            }
+    
+    return results
 
 # Page config
 st.set_page_config(
@@ -50,16 +141,120 @@ if "workflow_type" not in st.session_state:
 if "workflow_name" not in st.session_state:
     st.session_state.workflow_name = None
 
+if "last_configs" not in st.session_state:
+    st.session_state.last_configs = {}
+
+if "deploy_results" not in st.session_state:
+    st.session_state.deploy_results = None
+
+if "is_asking_questions" not in st.session_state:
+    st.session_state.is_asking_questions = False
+
+if "continue_to_workflow" not in st.session_state:
+    st.session_state.continue_to_workflow = False
+
+if "workflow_in_progress" not in st.session_state:
+    st.session_state.workflow_in_progress = False
+
 if "needs_connection" not in st.session_state:
     st.session_state.needs_connection = False
 
 if "platform_type" not in st.session_state:
     st.session_state.platform_type = None
 
+if "app_connection_deployed" not in st.session_state:
+    st.session_state.app_connection_deployed = False
+
 # Display chat history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+
+# If user clicked Continue to Workflow, inject a trigger message automatically
+if st.session_state.continue_to_workflow and not any(
+    "workflow details" in m["content"].lower() and m["role"] == "assistant"
+    for m in st.session_state.messages[-2:]
+):
+    trigger_message = "I want to continue to create the workflow now. Please ask me the workflow details."
+    st.session_state.messages.append({"role": "user", "content": trigger_message})
+    st.session_state.continue_to_workflow = False
+
+    with st.chat_message("user"):
+        st.markdown(trigger_message)
+
+    with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                try:
+                    system_prompt_continue = """You are an expert assistant for Health Data Connector (HDC) workflows.
+                    The user has already completed Application and Connection setup.
+                    
+                    Now ask them for workflow details in a SINGLE message following EXACTLY this format based on their workflow type:
+
+                    For "Call API and return raw response", ask:
+                    "Please provide the following details to configure your workflow:
+
+                    **Workflow Details:**
+                    1. Workflow name
+                    2. API request method (GET / POST / PUT / DELETE)
+                    3. API endpoint path (e.g., /patients/{patientId}?status={status}) — clearly indicate which are path params {} and which are query params ?key={value}
+
+                    **Only if POST or PUT:**
+                    4. Sample request body (as JSON)
+                    5. Request content type
+
+                    You can reply with all answers numbered."
+
+                    For "Call API and transform the response", ask:
+                    "Please provide the following details to configure your workflow:
+
+                    **Workflow Details:**
+                    1. Workflow name
+                    2. API request method (GET / POST / PUT / DELETE)
+                    3. API endpoint path (e.g., /patients/{patientId}?status={status}) — clearly indicate which are path params {} and which are query params ?key={value}
+
+                    **Only if POST or PUT:**
+                    4. Sample request body (as JSON)
+                    5. Request content type
+
+                    **Transformation Details:**
+                    6. Sample raw API response (as JSON)
+                    7. Desired output format (as JSON)
+
+                    You can reply with all answers numbered."
+
+                    CRITICAL: Always include Workflow name as question 1. Never deviate from these exact question formats."""
+                    
+                    messages_to_send = [{"role": "system", "content": system_prompt_continue}]
+                    
+                    if st.session_state.workflow_type:
+                        messages_to_send.append({
+                            "role": "system",
+                            "content": f"The user selected workflow type: {st.session_state.workflow_type}"
+                        })
+                    
+                    for msg in st.session_state.messages:
+                        messages_to_send.append({"role": msg["role"], "content": msg["content"]})
+
+                    completion = client.chat.completions.create(
+                        model="meta-llama/llama-4-scout-17b-16e-instruct",
+                        messages=messages_to_send,
+                        max_tokens=1000,
+                        temperature=0.2,
+                    )
+                    response = completion.choices[0].message.content
+
+                    if not isinstance(response, str) or not response:
+                        response = "Please provide your workflow details so I can help you configure it."
+                    
+                    response = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL).strip()
+
+                    if not response:
+                        response = "Please provide your workflow details so I can help you configure it."
+                    st.markdown(response)
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+            st.rerun()
 
 # Chat input
 if prompt := st.chat_input("Describe the workflow you need..."):
@@ -407,116 +602,14 @@ Examples of apiPath extraction:
   "shouldUrlEncodeParameters": false
 }
 
-**CRITICAL PATH PARAMETER EXAMPLES:**
-
-❌ WRONG (Do NOT include / in apiPath, and do NOT duplicate first segment):
-{
-  "apiPath": "/patients",  // Wrong: has leading /
-  "pathParameters": [
-    {
-      "value": "patients",  // Wrong: duplicating apiPath
-      "valueType": "Literal"
-    },
-    {
-      "value": "patientid",
-      "valueType": "Value"
-    }
-  ]
-}
-
-✅ CORRECT:
-{
-  "apiPath": "patients",
-  "pathParameters": [
-    {
-      "value": "patientid",
-      "valueType": "Value"
-    },
-    {
-      "value": "referralauths",
-      "valueType": "Literal"
-    }
-  ]
-}
-This builds: /patients/{patientid}/referralauths
-
-Another example - GET /patients/{patientid}/appointments/{appointmentid}:
-{
-  "apiPath": "patients",
-  "pathParameters": [
-    {
-      "value": "patientid",
-      "valueType": "Value"
-    },
-    {
-      "value": "appointments",
-      "valueType": "Literal"
-    },
-    {
-      "value": "appointmentid",
-      "valueType": "Value"
-    }
-  ]
-}
-
-Another example - GET /v1/departments:
-{
-  "apiPath": "v1",
-  "pathParameters": [
-    {
-      "value": "departments",
-      "valueType": "Literal"
-    }
-  ]
-}
-
-Another example - GET /appointments:
-{
-  "apiPath": "appointments",
-  "pathParameters": []
-}
-
-Another example - GET /patients/{patientid}/chat:
-{
-  "apiPath": "patients",
-  "pathParameters": [
-    {
-      "value": "patientid",
-      "valueType": "Value"
-    },
-    {
-      "value": "chat",
-      "valueType": "Literal"
-    }
-  ]
-}
-
-Another example - GET /patient/{patientid}/patientname/{patientname}:
-{
-  "apiPath": "patient",
-  "pathParameters": [
-    {
-      "value": "patientid",
-      "valueType": "Value"
-    },
-    {
-      "value": "patientname",
-      "valueType": "Literal"
-    },
-    {
-      "value": "patientname",
-      "valueType": "Value"
-    }
-  ]
-}
-
-CRITICAL RULE FOR LITERAL + VALUE PAIRS:
-- When a path segment is a fixed word (e.g., "patientname") followed by a dynamic value with the SAME name (e.g., {patientname}), you MUST generate TWO entries:
-  1. {"value": "patientname", "valueType": "Literal"} for the fixed segment
-  2. {"value": "patientname", "valueType": "Value"} for the dynamic value
-- This applies even when the literal segment name and the dynamic param name are identical
-- NEVER merge them into a single entry
-- NEVER skip the Literal entry just because it has the same name as the Value entry
+PATH PARAMETER RULES:
+- apiPath = first segment only, no leading /
+- All remaining segments go in pathParameters IN ORDER
+- Dynamic segments: valueType "Value", Static segments: valueType "Literal"
+- Literal segment followed by same-named dynamic = TWO entries (Literal first, then Value)
+- /patients → apiPath: "patients", pathParameters: []
+- /patients/{id}/appointments/{apptid} → apiPath: "patients", pathParameters: [{id,Value},{appointments,Literal},{apptid,Value}]
+- /patient/{id}/patientname/{patientname} → apiPath: "patient", pathParameters: [{id,Value},{patientname,Literal},{patientname,Value}]
 
 CRITICAL QUERY PARAMETER RULES:
 - The "key" is the query parameter name as it appears in the URL (e.g., "patientage")
@@ -914,35 +1007,26 @@ For non-API workflows (Types 3 & 4):
 5. ALWAYS use the output KEY (like "rawApiResponse" or "deserializedData") in the next step's input
 
 CRITICAL RULES:
-CRITICAL RULES:
-- NEVER GENERATE TEMPLATES OR CONFIGURATIONS UNTIL ALL QUESTIONS ARE ANSWERED
-- You must ask EVERY required question in order, one at a time
-- Do not provide "fill in the blanks" templates - generate complete, ready-to-use JSONs
-- Only after collecting ALL information should you generate the final configurations
+- NEVER generate configs until ALL questions are answered
+- Generate complete, ready-to-use JSONs only
 - For API workflows (Types 1 & 2): ALWAYS handle Connection/Application setup FIRST
-- For API workflows (Types 1 & 2): ALWAYS handle Connection/Application setup FIRST
-- Only auto-generate Application & Connection for Athena and Cerner platforms
-- For other platforms: Instruct user to create manually in HDC
-- Follow the structured question flow for the selected workflow type
-- For Application & Connection setup: Ask ALL questions in a single message grouped by section
-- For workflow-specific questions (name, method, endpoint, body, transformation): Ask ALL at once in a single grouped message
-- Never display filler messages about skipped steps (e.g., no request body for GET)
-- Never show intermediate step labels like "Step 3", "Step 4" etc in the conversation
-- Do NOT generate configs until ALL questions are answered
-- apiPath should ONLY be the base path
-- pathParameters must include ALL segments in order
+- Only auto-generate Application & Connection for Athena and Cerner
+- For Application & Connection: Ask ALL questions in a single message
+- For workflow questions: Ask ALL at once in a single message
+- Never show step labels or filler messages
+- apiPath is ONLY the first path segment (no leading /)
+- pathParameters must include ALL remaining segments in order
 - Template format MUST match contentType
-- formatType must always be "FirstItem" (never "Array")
+- formatType must always be "FirstItem"
 - HttpCallStep with transformId returns TWO outputs
-- NEVER create separate propertyGroups for each array index in Data Transform
-- ALWAYS use locator to iterate arrays in a single propertyGroup
-- Property paths inside a locator-based propertyGroup must be relative to each array item (e.g., "$.name" not "$.patients[0].name")
-- Generate complete, valid JSON
-- Application name and Connection name follow pattern: {Platform}-app-{organization} and {Platform}-con-{organization}
-- Secret ID is used in both clientSecretId and privateKeyName (same value)
-- Connection includes the application reference in applications object
-- ALWAYS generate a sample payloadParams JSON at the end of every configuration output showing all dynamic runtime parameters
-- payloadParams must include all Value-type path params, Value-type query params, and all %token% fields from templates"""
+- NEVER index arrays manually in Data Transform, use locator
+- Property paths inside locator are relative to each array item
+- query param key and value must always be the same
+- Application: {Platform}-app-{organization}, Connection: {Platform}-con-{organization}
+- Secret ID used in both clientSecretId and privateKeyName
+- ALWAYS end Application/Connection generation with ONLY: "Your Application and Connection configurations are ready. Please use the buttons below to either deploy now or continue to workflow setup."
+- NEVER ask workflow questions after generating Application/Connection configs
+- Only ask workflow questions when user explicitly requests to continue to workflow """
 
                 messages = [{"role": "system", "content": system_prompt}]
                 
@@ -983,9 +1067,24 @@ CRITICAL RULES:
                     max_tokens=4000,
                     temperature=0.2,
                 )
-                assistant_response = completion.choices[0].message.content
+                
+                # Safely extract response
+                if not completion or not completion.choices or len(completion.choices) == 0:
+                    assistant_response = "I'm sorry, I didn't get a response. Please try again."
+                elif completion.choices[0].message is None:
+                    assistant_response = "I'm sorry, the response was empty. Please try again."
+                elif completion.choices[0].message.content is None:
+                    # Sometimes model returns tool calls or empty content
+                    assistant_response = "I'm sorry, I didn't receive a valid response. Please try again."
+                else:
+                    assistant_response = completion.choices[0].message.content
 
-                assistant_response = re.sub(r'<think>.*?</think>', '', assistant_response, flags=re.DOTALL).strip()
+                if not isinstance(assistant_response, str):
+                    assistant_response = "I'm sorry, I didn't receive a valid response. Please try again."
+                else:
+                    assistant_response = re.sub(r'<think>.*?</think>', '', assistant_response, flags=re.DOTALL).strip()
+                    if not assistant_response:
+                        assistant_response = "I'm sorry, I didn't get a response. Please try again."
                 
                 # Detect workflow type selection from user's message
                 user_msg_lower = prompt.lower()
@@ -1027,9 +1126,51 @@ CRITICAL RULES:
                             break
                 
                 # Display response
-                st.markdown(assistant_response)
+                override = st.session_state.get("messages_override")
+                st.session_state.messages_override = None
+                display_response = override if override is not None else assistant_response
+                st.markdown(display_response)
+                assistant_response = display_response
                 
-                # Add to history
+                # Extract and store configs from response
+                extracted = extract_json_blocks(assistant_response)
+                for config in extracted:
+                    config_type = identify_config_type(config)
+                    if config_type:
+                        st.session_state.last_configs[config_type] = config
+
+                # Check what types of configs were just generated in this response
+                just_generated_configs = len(extracted) > 0
+                just_generated_types = [identify_config_type(c) for c in extracted]
+                only_app_connection = just_generated_configs and all(
+                    t in ["application", "connection"] for t in just_generated_types if t
+                )
+
+                # If workflow config was just generated, workflow is complete
+                if "workflow" in just_generated_types:
+                    st.session_state.workflow_in_progress = False
+
+                # If ONLY application/connection were just generated, strip everything after configs
+                if only_app_connection:
+                    closing_marker = "```"
+                    last_code_block = assistant_response.rfind(closing_marker)
+                    if last_code_block != -1:
+                        assistant_response = assistant_response[:last_code_block + len(closing_marker)]
+                    assistant_response += "\n\n✅ Your Application and Connection configurations are ready. Please use the buttons below to either deploy now or continue to workflow setup."
+                    st.session_state.is_asking_questions = False
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": assistant_response
+                    })
+                    st.rerun()
+                elif just_generated_configs:
+                    st.session_state.is_asking_questions = False
+                elif not st.session_state.last_configs:
+                    st.session_state.is_asking_questions = True
+                else:
+                    st.session_state.is_asking_questions = False
+
+                # Add to history for all non-rerun cases
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": assistant_response
@@ -1038,6 +1179,78 @@ CRITICAL RULES:
             except Exception as e:
                 st.error(f"Error: {str(e)}")
                 st.info("Please check your Groq API key configuration")
+
+# Show deployment success message in chat area if just deployed app/connection
+if st.session_state.get("app_connection_deployed") and not st.session_state.get("workflow_in_progress"):
+    st.success("✅ Application & Connection successfully deployed! Proceeding to workflow setup...")
+    st.session_state.app_connection_deployed = False
+    st.session_state.continue_to_workflow = True
+    st.session_state.workflow_in_progress = True
+    st.rerun()
+
+# Show Deploy section
+if st.session_state.last_configs and not st.session_state.is_asking_questions:
+
+    has_app_or_connection = any(k in st.session_state.last_configs for k in ["application", "connection"])
+    has_workflow = "workflow" in st.session_state.last_configs
+
+    # Show app/connection buttons only when workflow is NOT yet created
+    if has_app_or_connection and not has_workflow and not st.session_state.get("workflow_in_progress", False):
+        st.divider()
+        st.subheader("🚀 Deploy to HDC")
+        st.write("The following configurations are ready:")
+        for config_type in st.session_state.last_configs:
+            st.write(f"✅ {config_type.capitalize()} configuration ready")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Deploy Application & Connection Now", type="secondary"):
+                partial_configs = {k: v for k, v in st.session_state.last_configs.items() if k in ["application", "connection"]}
+                with st.spinner("Deploying Application & Connection to HDC..."):
+                    results = deploy_configurations(partial_configs)
+                    all_success = all(r["success"] for r in results.values())
+                    if all_success:
+                        st.session_state.last_configs = {k: v for k, v in st.session_state.last_configs.items() if k not in ["application", "connection"]}
+                        st.session_state.app_connection_deployed = True
+                    else:
+                        st.session_state.deploy_results = results
+                st.rerun()
+        with col2:
+            if st.button("Continue to Workflow First", type="primary"):
+                st.session_state.continue_to_workflow = True
+                st.session_state.workflow_in_progress = True
+                st.rerun()
+
+        if st.session_state.deploy_results:
+            st.subheader("📊 Deployment Results")
+            for config_type, result in st.session_state.deploy_results.items():
+                if result["success"]:
+                    st.success(f"✅ {config_type.capitalize()} - Successfully deployed")
+                else:
+                    st.error(f"❌ {config_type.capitalize()} - Failed")
+                    st.code(str(result["response"]), language="text")
+
+    # Show full deploy button only when workflow is ready
+    elif has_workflow:
+        st.divider()
+        st.subheader("🚀 Deploy to HDC")
+        st.write("The following configurations are ready:")
+        for config_type in st.session_state.last_configs:
+            st.write(f"✅ {config_type.capitalize()} configuration ready")
+
+        if st.button("Deploy All Configurations to HDC", type="primary"):
+            with st.spinner("Deploying all configurations to HDC..."):
+                results = deploy_configurations(st.session_state.last_configs)
+                st.session_state.deploy_results = results
+
+        if st.session_state.deploy_results:
+            st.subheader("📊 Deployment Results")
+            for config_type, result in st.session_state.deploy_results.items():
+                if result["success"]:
+                    st.success(f"✅ {config_type.capitalize()} - Successfully deployed")
+                else:
+                    st.error(f"❌ {config_type.capitalize()} - Failed")
+                    st.code(str(result["response"]), language="text")
 
 # Sidebar
 with st.sidebar:
@@ -1093,6 +1306,10 @@ with st.sidebar:
         st.session_state.workflow_name = None
         st.session_state.needs_connection = False
         st.session_state.platform_type = None
+        st.session_state.last_configs = {}
+        st.session_state.deploy_results = None
+        st.session_state.continue_to_workflow = False
+        st.session_state.workflow_in_progress = False
         st.session_state.messages.append({
             "role": "assistant",
             "content": """👋 Welcome to HDC Workflow Builder! I can help you create professional health data integration workflows. 
