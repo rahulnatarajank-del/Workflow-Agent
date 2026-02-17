@@ -290,15 +290,28 @@ For Workflow Types 1 and 2 (API-based workflows), you MUST ask about Connection 
 1. First, ask: "Do you already have a Connection and Application configured for this API in HDC?"
 
 2. If user says NO or wants to create new:
-   a. Ask: "Which platform are you connecting to? (Athena or Cerner)"
-   
-   b. If platform is **Athena** or **Cerner**:
-      - Proceed with Athena/Cerner Application & Connection creation flow (see below)
-   
-   c. If platform is **anything else** (Epic, OAuth2, etc.):
-      - Respond: "Currently, we only support auto-generation for Athena and Cerner connections. For other platforms, please create the Connection and Application manually in your HDC configuration, then return here to continue with the workflow."
-      - Wait for user to confirm they've created it manually
-      - Then proceed with workflow questions
+   - Immediately ask ALL questions at once in a SINGLE message:
+
+"To set up your Application and Connection, please provide the following details:
+
+**Platform & Application Details:**
+1. Which platform are you connecting to? (Athena or Cerner — other platforms require manual setup)
+2. Organization name (used to generate IDs)
+3. Secret ID from HDC Secret Manager
+4. Client ID
+5. Application type: Backend / ProviderLaunch / PatientLaunch
+6. OAuth scopes (comma-separated, or leave empty if none)
+
+**Connection Details:**
+7. Base URL (e.g., https://api.preview.platform.athenahealth.com)
+8. Environment: Dev / Test / Stage / Prod
+9. Token endpoint URL (e.g., https://api.preview.platform.athenahealth.com/oauth2/v1/token)
+
+You can reply with all answers numbered 1-9."
+
+   - Wait for all 9 answers
+   - If answer to question 1 is NOT Athena or Cerner, respond: "Currently, we only support auto-generation for Athena and Cerner connections. For other platforms, please create the Connection and Application manually in your HDC configuration, then return here to continue with the workflow."
+   - Otherwise, generate Application and Connection JSONs using the provided answers
 
 3. If user says YES (already have connection):
    - Skip connection/application creation
@@ -308,25 +321,9 @@ For Workflow Types 1 and 2 (API-based workflows), you MUST ask about Connection 
 
 When user wants to create Athena or Cerner connection, ask these questions IN ORDER (one at a time):
 
-**Application & Connection Questions (Ask ALL at once in a single message):**
+**Application & Connection Questions (Already asked in combined flow above — do NOT ask again):**
 
-Send this single message asking everything together:
-
-"To set up your [Athena/Cerner] Application and Connection, please provide the following details:
-
-**Application Details:**
-1. Organization name (used to generate IDs)
-2. Secret ID from HDC Secret Manager (if you don't have one, go to HDC → Configuration → Secret Manager → Create New Secret, then provide only the Key/Secret ID here)
-3. Client ID
-4. Application type: Backend / ProviderLaunch / PatientLaunch
-5. OAuth scopes (comma-separated, or leave empty if none)
-
-**Connection Details:**
-6. Base URL (e.g., https://api.preview.platform.athenahealth.com)
-7. Environment: Dev / Test / Stage / Prod
-8. Token endpoint URL (e.g., https://api.preview.platform.athenahealth.com/oauth2/v1/token)
-
-You can reply with all answers numbered 1-8."
+Once user provides all 9 answers, use answer 1 as the platform name in all generated IDs and config fields.
 
 Wait for user to provide all 8 answers, then generate the Application and Connection JSONs.
 
@@ -1012,8 +1009,9 @@ CRITICAL RULES:
 - For API workflows (Types 1 & 2): ALWAYS handle Connection/Application setup FIRST
 - Only auto-generate Application & Connection for Athena and Cerner
 - For Application & Connection: Ask ALL questions in a single message
-- For workflow questions: Ask ALL at once in a single message
+- For workflow questions: Ask ALL at once in a single message, immediately after Application/Connection JSON generation
 - Never show step labels or filler messages
+- After generating Application & Connection JSONs, always continue in the SAME response to ask workflow questions
 - apiPath is ONLY the first path segment (no leading /)
 - pathParameters must include ALL remaining segments in order
 - Template format MUST match contentType
@@ -1024,9 +1022,10 @@ CRITICAL RULES:
 - query param key and value must always be the same
 - Application: {Platform}-app-{organization}, Connection: {Platform}-con-{organization}
 - Secret ID used in both clientSecretId and privateKeyName
-- ALWAYS end Application/Connection generation with ONLY: "Your Application and Connection configurations are ready. Please use the buttons below to either deploy now or continue to workflow setup."
-- NEVER ask workflow questions after generating Application/Connection configs
-- Only ask workflow questions when user explicitly requests to continue to workflow """
+- ALWAYS end Application/Connection generation with ONLY: "✅ Your Application and Connection configurations have been deployed to HDC. Now let's set up your workflow. Please provide the following details:"
+- IMMEDIATELY follow with the workflow questions (do NOT wait for user confirmation)
+- Ask workflow questions in the SAME message right after the deployment confirmation line
+- NEVER wait for user to click buttons or confirm before asking workflow questions """
 
                 messages = [{"role": "system", "content": system_prompt}]
                 
@@ -1152,12 +1151,7 @@ CRITICAL RULES:
 
                 # If ONLY application/connection were just generated, strip everything after configs
                 if only_app_connection:
-                    closing_marker = "```"
-                    last_code_block = assistant_response.rfind(closing_marker)
-                    if last_code_block != -1:
-                        assistant_response = assistant_response[:last_code_block + len(closing_marker)]
-                    assistant_response += "\n\n✅ Your Application and Connection configurations are ready. Please use the buttons below to either deploy now or continue to workflow setup."
-                    st.session_state.is_asking_questions = False
+                    st.session_state.is_asking_questions = True
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": assistant_response
@@ -1181,12 +1175,8 @@ CRITICAL RULES:
                 st.info("Please check your Groq API key configuration")
 
 # Show deployment success message in chat area if just deployed app/connection
-if st.session_state.get("app_connection_deployed") and not st.session_state.get("workflow_in_progress"):
-    st.success("✅ Application & Connection successfully deployed! Proceeding to workflow setup...")
+if st.session_state.get("app_connection_deployed"):
     st.session_state.app_connection_deployed = False
-    st.session_state.continue_to_workflow = True
-    st.session_state.workflow_in_progress = True
-    st.rerun()
 
 # Show Deploy section
 if st.session_state.last_configs and not st.session_state.is_asking_questions:
@@ -1195,40 +1185,25 @@ if st.session_state.last_configs and not st.session_state.is_asking_questions:
     has_workflow = "workflow" in st.session_state.last_configs
 
     # Show app/connection buttons only when workflow is NOT yet created
-    if has_app_or_connection and not has_workflow and not st.session_state.get("workflow_in_progress", False):
-        st.divider()
-        st.subheader("🚀 Deploy to HDC")
-        st.write("The following configurations are ready:")
-        for config_type in st.session_state.last_configs:
-            st.write(f"✅ {config_type.capitalize()} configuration ready")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Deploy Application & Connection Now", type="secondary"):
-                partial_configs = {k: v for k, v in st.session_state.last_configs.items() if k in ["application", "connection"]}
-                with st.spinner("Deploying Application & Connection to HDC..."):
-                    results = deploy_configurations(partial_configs)
-                    all_success = all(r["success"] for r in results.values())
-                    if all_success:
-                        st.session_state.last_configs = {k: v for k, v in st.session_state.last_configs.items() if k not in ["application", "connection"]}
-                        st.session_state.app_connection_deployed = True
-                    else:
-                        st.session_state.deploy_results = results
-                st.rerun()
-        with col2:
-            if st.button("Continue to Workflow First", type="primary"):
-                st.session_state.continue_to_workflow = True
-                st.session_state.workflow_in_progress = True
-                st.rerun()
-
-        if st.session_state.deploy_results:
-            st.subheader("📊 Deployment Results")
-            for config_type, result in st.session_state.deploy_results.items():
-                if result["success"]:
-                    st.success(f"✅ {config_type.capitalize()} - Successfully deployed")
+    if has_app_or_connection and not has_workflow:
+        # Auto-deploy app/connection immediately without buttons
+        partial_configs = {k: v for k, v in st.session_state.last_configs.items() if k in ["application", "connection"]}
+        if partial_configs and not st.session_state.get("app_connection_deployed"):
+            with st.spinner("Deploying Application & Connection to HDC..."):
+                results = deploy_configurations(partial_configs)
+                all_success = all(r["success"] for r in results.values())
+                if all_success:
+                    st.session_state.last_configs = {k: v for k, v in st.session_state.last_configs.items() if k not in ["application", "connection"]}
+                    st.session_state.app_connection_deployed = True
                 else:
-                    st.error(f"❌ {config_type.capitalize()} - Failed")
-                    st.code(str(result["response"]), language="text")
+                    st.session_state.deploy_results = results
+                    st.subheader("📊 Deployment Results")
+                    for config_type, result in results.items():
+                        if result["success"]:
+                            st.success(f"✅ {config_type.capitalize()} - Successfully deployed")
+                        else:
+                            st.error(f"❌ {config_type.capitalize()} - Failed")
+                            st.code(str(result["response"]), language="text")
 
     # Show full deploy button only when workflow is ready
     elif has_workflow:
