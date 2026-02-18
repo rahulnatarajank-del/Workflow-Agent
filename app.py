@@ -75,6 +75,8 @@ def identify_config_type(config):
         return "application"
     elif "connectionId" in config:
         return "connection"
+    elif "templateId" in config:
+        return "template"
     return None
 
 def deploy_configurations(configs):
@@ -85,13 +87,14 @@ def deploy_configurations(configs):
     endpoint_map = {
         "application": "/api/v1/applications",
         "connection": "/api/v1/connections",
+        "template": "/api/v1/templates",
         "api": "/api/v1/apis",
         "transform": "/api/v1/transforms",
         "workflow": "/api/v1/workflows"
-    }
+}
     
     # Deploy in correct order: application → connection → api/transform → workflow
-    order = ["application", "connection", "api", "transform", "workflow"]
+    order = ["application", "connection", "template", "api", "transform", "workflow"]
     
     for config_type in order:
         if config_type in configs:
@@ -527,6 +530,7 @@ CONFIGURATION STRUCTURES:
 **CRITICAL CONTENT TYPE RULES:**
 - If user does NOT specify contentType, ALWAYS default to "application/json"
 - If user does NOT specify acceptContentType, ALWAYS default to "application/json"
+- If user specifies "multipart/form-data", automatically use "application/x-www-form-urlencoded" instead (multipart is not supported, but form-urlencoded handles the same data)
 - Only use other content types (application/x-www-form-urlencoded, application/xml, application/fhir+json) if user explicitly specifies them
 - For GET and DELETE requests: contentType is still "application/json" (no request body)
 
